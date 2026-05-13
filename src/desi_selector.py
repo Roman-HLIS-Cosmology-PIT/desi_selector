@@ -161,8 +161,9 @@ class DesiSelector:
         
         elif self.desi_tracer == 'lrg':
             tracer_data = pd.read_csv(self.path_desi_tracer, index_col=False)
-            z_bin_min = tracer_data['zmin'].to_numpy()
-            z_bin_max = tracer_data['zmax'].to_numpy()
+            # ignore the fist redshift bin since it is negative
+            z_bin_min = tracer_data['zmin'].to_numpy()[1:] 
+            z_bin_max = tracer_data['zmax'].to_numpy()[1:]
             z_bin_center = (z_bin_min + z_bin_max) / 2
 
         
@@ -199,7 +200,8 @@ class DesiSelector:
 
         
         elif self.desi_tracer == 'lrg':
-            nz_avg = tracer_data['n_desi_lrg'].to_numpy()
+            # ignore first bin since there are no galaxies
+            nz_avg = tracer_data['n_desi_lrg'].to_numpy()[1:]
 
         
         elif self.desi_tracer == 'elg':
