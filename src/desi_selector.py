@@ -25,18 +25,18 @@ class DesiSelector:
     cosmo = LambdaCDM(H0=h * 100, Om0=OMEGA_C + OMEGA_B, Ode0=1 - (OMEGA_C + OMEGA_B))
     
     def __init__(self, 
-                 desi_tracer,
-                 path_desi_tracer,
-                 path_sim,
-                 calibration_version,
-                 z_range = [0,2], 
-                 z_grid_points=481,
-                 select_biggest=True,
-                 synth_cores=False,
-                 reload_oc=True,
-                 threshold_col=None,
-                 sigma_dex=None,
-                 weight=None
+                 desi_tracer: str,
+                 path_desi_tracer: dict[str, str],
+                 path_sim: str,
+                 calibration_version: str,
+                 z_range: list[int], 
+                 z_grid_points: int,
+                 select_biggest: bool=True,
+                 synth_cores: bool=False,
+                 reload_oc: bool=True,
+                 threshold_col: str=None,
+                 sigma_dex: float=None,
+                 weight: float=None
                  ):
 
         self.desi_tracer = desi_tracer
@@ -152,51 +152,68 @@ class DesiSelector:
         
         # load the desi tracer data we are abundance matching to and get bin edges and centers
 
+        # DESI footprint areas
+        NORTH_AREA = 4400
+        SOUTH_DECAL_AREA = 8500
+        SOUTH_DES_AREA = 1100
+        TOTAL_DESI_AREA = 14000
+        
+        
         if self.desi_tracer == 'bgs':
-            tracer_data = np.loadtxt(self.path_desi_tracer)
+            tracer_data = np.loadtxt(self.path_desi_tracer['north'])
             z_bin_center = tracer_data[:,0]
             z_bin_min = tracer_data[:,1]
             z_bin_max = tracer_data[:,2]
 
         
         elif self.desi_tracer == 'lrg':
-            tracer_data = pd.read_csv(self.path_desi_tracer, index_col=False)
-            # ignore the fist redshift bin since it is negative
+            tracer_data = pd.read_csv(self.path_desi_tracer['path'], index_col=False)
+            # ignore the fist redshift bin since it is negative and does not contain galaxies
             z_bin_min = tracer_data['zmin'].to_numpy()[1:] 
             z_bin_max = tracer_data['zmax'].to_numpy()[1:]
             z_bin_center = (z_bin_min + z_bin_max) / 2
 
         
         elif self.desi_tracer == 'elg':
-            tracer_data = table.Table.read(self.path_desi_tracer,  format='ascii.ecsv')
+            tracer_data = table.Table.read(self.path_desi_tracer['path'],  format='ascii.ecsv')
             z_bin_min = tracer_data['ZMIN']
             z_bin_max = tracer_data['ZMAX']
             z_bin_center = (z_bin_min + z_bin_max) / 2 
 
         
         elif self.desi_tracer == 'qso':
-            tracer_data = table.Table.read(self.path_desi_tracer,  format='ascii.ecsv')
+            tracer_data = table.Table.read(self.path_desi_tracer['path'],  format='ascii.ecsv')
             z_mask = np.logical_and(tracer_data['z'] > self.z_range[0], tracer_data['z'] < self.z_range[1])
             z_bin_center = tracer_data['z'][z_mask]
             z_bin_min = z_bin_center - 0.050/2
             z_bin_max = z_bin_center + 0.050/2
 
         
-
-        
         # get the desi tracer number/deg2 data we want to match to 
         if self.desi_tracer == 'bgs':
+            
             EFF_AREA_NORTH = 5108.0437685335755
             EFF_AREA_SOUTH = 2071.9122137829345
+            FRAC_AREA_NORTH = NORTH_AREA / TOTAL_DESI_AREA
+            FRAC_AREA_SOUTH = (SOUTH_DECAL_AREA + SOUTH_DES_AREA) / TOTAL_DESI_AREA
             
-            path_north = '/global/homes/y/yoki/roman/desi_like_samples/diffsky/data/desi_sv_data/desi_bgs_ts_zenodo/BGS_BRIGHT-21.5_NGC_nz.txt'
-            path_south = '/global/homes/y/yoki/roman/desi_like_samples/diffsky/data/desi_sv_data/desi_bgs_ts_zenodo/BGS_BRIGHT-21.5_SGC_nz.txt'
+            path_north = self.path_desi_tracer['north']
+            path_south = self.path_desi_tracer['south']
             data_north = np.loadtxt(path_north)
             data_south = np.loadtxt(path_south)
             
             n_bin_north = data_north[:,4]
             n_bin_south = data_south[:,4]
-            nz_avg = ((n_bin_north / EFF_AREA_NORTH) + (n_bin_south / EFF_AREA_SOUTH)) / 2 
+            nz_north = n_bin_north / EFF_AREA_NORTH
+            nz_south = n_bin_south / EFF_AREA_SOUTH
+            nz_avg = nz_north*FRAC_AREA_NORTH + nz_south*FRAC_AREA_SOUTH
+
+            fiber_rate_bgs = 0.636
+            num_goodz_bgs = 300043
+            area_bgs = 7473
+            correct_norm_bgs = (num_goodz_bgs / area_bgs) / fiber_rate_bgs
+            wrong_norm_bgs = np.sum(nz_avg)
+            nz_avg = nz_avg*(correct_norm_bgs/wrong_norm_bgs)
 
         
         elif self.desi_tracer == 'lrg':
@@ -205,21 +222,21 @@ class DesiSelector:
 
         
         elif self.desi_tracer == 'elg':
-            LOP_NORTH_AREA = 4400
-            LOP_SOUTH_DECAL_AREA = 8500
-            LOP_SOUTH_DES_AREA = 1100
-            TOTAL_DESI_AREA = 14000
+ 
             lop_north = tracer_data['ELG_LOP_NORTH']
             lop_south_decal = tracer_data['ELG_LOP_SOUTH_DECALS']
             lop_south_des = tracer_data['ELG_LOP_SOUTH_DES']
-            nz_avg = (lop_north * LOP_NORTH_AREA + lop_south_decal * LOP_SOUTH_DECAL_AREA  + lop_south_des * LOP_SOUTH_DES_AREA )/(TOTAL_DESI_AREA)
+            nz_avg = (lop_north * NORTH_AREA + lop_south_decal * SOUTH_DECAL_AREA  + lop_south_des * SOUTH_DES_AREA)/(TOTAL_DESI_AREA)
+            fiber_rate_elg = 0.69 
+            nz_avg = nz_avg / fiber_rate_elg 
 
 
         elif self.desi_tracer == 'qso':
+            
             z_mask = np.logical_and(tracer_data['z'] > self.z_range[0], tracer_data['z'] < self.z_range[1])
             nz_north = tracer_data['n_z_north'][z_mask]
             nz_south = tracer_data['n_z_south'][z_mask]
-            nz_avg = (nz_north + nz_south) / 2 
+            nz_avg = (nz_north*NORTH_AREA + nz_south*(SOUTH_DECAL_AREA + SOUTH_DES_AREA)) / TOTAL_DESI_AREA 
 
 
         print(f'The redshift range of the tracer being emulated is {np.min(z_bin_min)} - {np.max(z_bin_max)}')
