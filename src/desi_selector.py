@@ -663,39 +663,19 @@ class DesiSelectorE2E:
         return mock_cat
 
     def produce_desi_rands(self, mock_cat=None):
-        
-        sim_patches = np.unique(self.sim_cat['lc_patch'])
 
+        
         RAND_TO_DATA_RATIO = 10
-        npatches = len(sim_patches)
-        ntot = int(len(mock_cat)* RAND_TO_DATA_RATIO / npatches)
-        lc_path = '/global/homes/y/yoki/roman/desi_like_samples/diffsky/data/lc_metadata/lc_cores-decomposition.txt'
-        lc_cores_decomp = lightcone_utils.read_lc_ra_dec_patch_decomposition(lc_path)[0]
-        theta_low = lc_cores_decomp[:,1]
-        theta_high = lc_cores_decomp[:,2]
-        phi_low = lc_cores_decomp[:,3]
-        phi_high = lc_cores_decomp[:,4]
-    
-    
-        ra_min, dec_max = lightcone_utils.get_ra_dec_from_theta_phi(theta_low, phi_low)
-        ra_max, dec_min = lightcone_utils.get_ra_dec_from_theta_phi(theta_high, phi_high)
-        ran_key = jran.PRNGKey(0)
-    
+        ntot = int(len(mock_cat)* RAND_TO_DATA_RATIO)
         
-        list_ra = []
-        list_dec = []
+        ra_min = np.min(self.sim_cat['ra'])
+        ra_max = np.max(self.sim_cat['ra'])
         
-        for patch in sim_patches:
-            
-            ra_loop, dec_loop = lc_utils.mc_lightcone_random_ra_dec(ran_key=ran_key, npts=ntot, ra_min=ra_min[patch],
-            ra_max=ra_max[patch], dec_min=dec_min[patch], dec_max=dec_max[patch])
-    
-            list_ra.append(ra_loop)
-            list_dec.append(dec_loop)
-                                        
-            
-        rand_ra = np.concatenate(list_ra)
-        rand_dec = np.concatenate(list_dec)
+        rand_ra = ra_min + (ra_max - ra_min)*np.random.random(size=ntot)
+        cth_min = np.min(np.sin(np.radians(self.sim_cat['dec'])))
+        cth_max = np.max(np.sin(np.radians(self.sim_cat['dec'])))
+        cth_rand = cth_min + (cth_max - cth_min)*np.random.random(size=ntot)
+        rand_dec = np.degrees(np.arcsin(cth_rand))        
             
         list_rand_cols = np.column_stack([rand_ra, rand_dec])
         rand_cat = pd.DataFrame(list_rand_cols, columns=['ra', 'dec'])
