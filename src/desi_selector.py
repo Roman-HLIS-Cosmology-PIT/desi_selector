@@ -1,3 +1,5 @@
+import os
+import hashlib
 import opencosmo as oc
 import numpy as np
 import pandas as pd
@@ -36,7 +38,8 @@ class DesiSelector:
                  reload_oc: bool=True,
                  threshold_col: str=None,
                  sigma_dex: float=None,
-                 weight: float=None
+                 weight: float=None,
+                 cache_root: str | Path | None = None,
                  ):
 
         self.desi_tracer = desi_tracer
@@ -51,6 +54,12 @@ class DesiSelector:
         self.threshold_col = threshold_col
         self.sigma_dex = sigma_dex
         self.weight = weight
+        default_cache = os.environ.get(
+            "DESI_SELECTOR_CACHE_ROOT",
+            "/pscratch/sd/l/lhior/nz_clustering_e2e/desi_cache",
+        )
+        self.cache_root = Path(cache_root if cache_root is not None else default_cache)
+        self._list_sim_data = None
 
         
         if self.threshold_col is None:
@@ -72,6 +81,7 @@ class DesiSelector:
         
         path_sim_data = Path(f"{self.path_sim}/{self.calibration_version}")
         list_sim_data = list(f for f in path_sim_data.glob("*.hdf5") if f.stem.startswith("lc_cores"))
+        self._list_sim_data = list_sim_data
 
         # Calculate the total area the mocks span on the sky 
         dataset = oc.open(list_sim_data, synth_cores=self.synth_cores)
@@ -98,21 +108,28 @@ class DesiSelector:
 
 
         if self.reload_oc:
-            
+            z_low, z_high = self.z_range[0], self.z_range[1]
             dataset = dataset.select(columns)
-            dataset = dataset.with_redshift_range(self.z_range[0], self.z_range[1])
+            # lc_cores HDF5 uses redshift_true; with_redshift_range expects redshift
+            dataset = dataset.filter(
+                oc.col("redshift_true") > z_low,
+                oc.col("redshift_true") < z_high,
+            )
             sim_cat = dataset.get_data('pandas')
             sim_cat['distance'] = DesiSelector.cosmo.comoving_distance(sim_cat['redshift_true']).value
 
-            sim_cat_filename = f"/global/homes/y/yoki/roman/desi_like_samples/diffsky/data/sim_data/{desi_tracer}/{self.calibration_version}_{self.sim_area}_{self.threshold_col}.parquet"
+            sim_cat_filename = self._sim_cat_path()
+            sim_cat_filename.parent.mkdir(parents=True, exist_ok=True)
             sim_cat.to_parquet(sim_cat_filename)
         else:
-            
-            sim_cat_filename = f"/global/homes/y/yoki/roman/desi_like_samples/diffsky/data/sim_data/{desi_tracer}/{self.calibration_version}_{self.sim_area}_{self.threshold_col}.parquet"
-            
-            if Path(sim_cat_filename).exists():
-                
+            sim_cat_filename = self._resolve_sim_cat_path()
+            if sim_cat_filename.exists():
                 sim_cat = pd.read_parquet(sim_cat_filename)
+            else:
+                raise FileNotFoundError(
+                    f"Cached sim catalog not found at {sim_cat_filename}; "
+                    f"set reload_oc: true for tracer {self.desi_tracer}"
+                )
 
 
         # Columns to abundance match with
@@ -121,14 +138,16 @@ class DesiSelector:
             sim_cat.rename(columns={'logsm_obs': 'log_stellar_mass'}, inplace=True)
 
             if self.sigma_dex is not None:
-                noise = np.random.normal(loc=0, scale=self.sigma_dex, size=len(sim_cat)) 
+                rng = self._noise_rng()
+                noise = rng.normal(loc=0, scale=self.sigma_dex, size=len(sim_cat))
                 sim_cat['log_peak_sub_halo_mass_noisy'] = sim_cat['log_peak_sub_halo_mass'] + noise
         
         if self.desi_tracer == 'lrg':
             sim_cat.rename(columns={'logmp_obs': 'log_peak_sub_halo_mass'}, inplace=True)
 
             if self.sigma_dex is not None:
-                noise = np.random.normal(loc=0, scale=self.sigma_dex, size=len(sim_cat)) 
+                rng = self._noise_rng()
+                noise = rng.normal(loc=0, scale=self.sigma_dex, size=len(sim_cat))
                 sim_cat['log_peak_sub_halo_mass_noisy'] = sim_cat['log_peak_sub_halo_mass'] + noise
 
         if self.desi_tracer == 'elg':
@@ -137,16 +156,82 @@ class DesiSelector:
             if self.weight is not None:
                 sim_cat['log_sfr_times_wmass'] = sim_cat['log_sfr'] + self.weight*sim_cat['logsm_obs']
 
+            if self.sigma_dex is not None:
+                rng = self._noise_rng()
+                noise = rng.normal(loc=0, scale=self.sigma_dex, size=len(sim_cat))
+                sim_cat['log_sfr_noisy'] = sim_cat['log_sfr'] + noise
+            else:
+                sim_cat['log_sfr_noisy'] = sim_cat['log_sfr']
+
         if self.desi_tracer == 'qso':
             
             if self.sigma_dex is not None:
 
+                rng = self._noise_rng()
                 sigma_nat = self.sigma_dex * np.log(10)
-                noise = np.random.lognormal(mean=0, sigma=sigma_nat, size=len(sim_cat))
+                noise = rng.lognormal(mean=0, sigma=sigma_nat, size=len(sim_cat))
                 sim_cat['black_hole_mass_noisy'] = sim_cat['black_hole_mass'] * noise    
 
         self.sim_cat = sim_cat
 
+    def _noise_rng(self) -> np.random.Generator:
+        """Deterministic RNG for tracer noise (reproducible across runs)."""
+        key = (
+            self.desi_tracer,
+            self.calibration_version,
+            self.threshold_col,
+            None if self.sigma_dex is None else float(self.sigma_dex),
+            None if self.weight is None else float(self.weight),
+            float(self.z_range[0]),
+            float(self.z_range[1]),
+        )
+        digest = hashlib.md5(repr(key).encode()).hexdigest()
+        seed = int(digest[:8], 16)
+        return np.random.default_rng(seed)
+
+    def _sim_cat_path(self) -> Path:
+        z_low, z_high = self.z_range[0], self.z_range[1]
+        return (
+            self.cache_root
+            / "sim_data"
+            / self.desi_tracer
+            / f"{self.calibration_version}_{self.sim_area}_z{z_low}_{z_high}.parquet"
+        )
+
+    def _resolve_sim_cat_path(self) -> Path:
+        """Resolve sim catalog cache path, with legacy threshold_col fallback."""
+        primary = self._sim_cat_path()
+        if primary.exists():
+            return primary
+        legacy = (
+            self.cache_root
+            / "sim_data"
+            / self.desi_tracer
+            / f"{self.calibration_version}_{self.sim_area}_{self.threshold_col}.parquet"
+        )
+        if legacy.exists():
+            print(f"Using legacy sim cache: {legacy.name}")
+            return legacy
+        return primary
+
+    def _z_center_path(self) -> Path:
+        return (
+            self.cache_root
+            / "selection_z_centers"
+            / self.desi_tracer
+            / f"{self.z_grid_points}_centers.npy"
+        )
+
+    def _threshold_path(self) -> Path:
+        return (
+            self.cache_root
+            / "selection_thresholds"
+            / self.desi_tracer
+            / f"{self.threshold_col}_thres.npy"
+        )
+
+    def _lc_metadata_path(self) -> Path:
+        return self.cache_root / "lc_metadata" / "lc_cores-decomposition.txt"
     
     def rebin_desi_tracer(self):
         
@@ -272,7 +357,8 @@ class DesiSelector:
 
         
         # save the new z center
-        path_z_center = f'/global/homes/y/yoki/roman/desi_like_samples/diffsky/data/selection_z_centers/{self.desi_tracer}/{self.z_grid_points}_centers.npy'
+        path_z_center = self._z_center_path()
+        path_z_center.parent.mkdir(parents=True, exist_ok=True)
         np.save(path_z_center, self.new_z_center)
         
     
@@ -313,7 +399,8 @@ class DesiSelector:
         threshold_all = thres_of_z(self.sim_cat['redshift_true'])
 
         # save the threshold values
-        path_threshold = f'/global/homes/y/yoki/roman/desi_like_samples/diffsky/data/selection_thresholds/{self.desi_tracer}/{self.threshold_col}_thres.npy'
+        path_threshold = self._threshold_path()
+        path_threshold.parent.mkdir(parents=True, exist_ok=True)
         np.save(path_threshold, threshold_all)
 
         if self.select_biggest:
@@ -328,6 +415,18 @@ class DesiSelector:
 
         return mock_cat
 
+    def _patch_ra_dec_bounds(self) -> dict[int, tuple[float, float, float, float]]:
+        bounds: dict[int, tuple[float, float, float, float]] = {}
+        for patch in np.unique(self.sim_cat["lc_patch"]):
+            patch_data = self.sim_cat[self.sim_cat["lc_patch"] == patch]
+            bounds[int(patch)] = (
+                float(patch_data["ra"].min()),
+                float(patch_data["ra"].max()),
+                float(patch_data["dec"].min()),
+                float(patch_data["dec"].max()),
+            )
+        return bounds
+
     def produce_desi_rands(self, mock_cat=None):
         
         sim_patches = np.unique(self.sim_cat['lc_patch'])
@@ -335,16 +434,19 @@ class DesiSelector:
         RAND_TO_DATA_RATIO = 10
         npatches = len(sim_patches)
         ntot = int(len(mock_cat)* RAND_TO_DATA_RATIO / npatches)
-        lc_path = '/global/homes/y/yoki/roman/desi_like_samples/diffsky/data/lc_metadata/lc_cores-decomposition.txt'
-        lc_cores_decomp = lightcone_utils.read_lc_ra_dec_patch_decomposition(lc_path)[0]
-        theta_low = lc_cores_decomp[:,1]
-        theta_high = lc_cores_decomp[:,2]
-        phi_low = lc_cores_decomp[:,3]
-        phi_high = lc_cores_decomp[:,4]
-    
-    
-        ra_min, dec_max = lightcone_utils.get_ra_dec_from_theta_phi(theta_low, phi_low)
-        ra_max, dec_min = lightcone_utils.get_ra_dec_from_theta_phi(theta_high, phi_high)
+        lc_path = self._lc_metadata_path()
+        if lc_path.exists():
+            lc_cores_decomp = lightcone_utils.read_lc_ra_dec_patch_decomposition(str(lc_path))[0]
+            theta_low = lc_cores_decomp[:,1]
+            theta_high = lc_cores_decomp[:,2]
+            phi_low = lc_cores_decomp[:,3]
+            phi_high = lc_cores_decomp[:,4]
+            ra_min, dec_max = lightcone_utils.get_ra_dec_from_theta_phi(theta_low, phi_low)
+            ra_max, dec_min = lightcone_utils.get_ra_dec_from_theta_phi(theta_high, phi_high)
+            use_theta_phi = True
+        else:
+            patch_bounds = self._patch_ra_dec_bounds()
+            use_theta_phi = False
         ran_key = jran.PRNGKey(0)
     
         
@@ -352,9 +454,26 @@ class DesiSelector:
         list_dec = []
         
         for patch in sim_patches:
-            
-            ra_loop, dec_loop = lc_utils.mc_lightcone_random_ra_dec(ran_key=ran_key, npts=ntot, ra_min=ra_min[patch],
-            ra_max=ra_max[patch], dec_min=dec_min[patch], dec_max=dec_max[patch])
+            patch_idx = int(patch)
+            if use_theta_phi:
+                ra_loop, dec_loop = lc_utils.mc_lightcone_random_ra_dec(
+                    ran_key=ran_key,
+                    npts=ntot,
+                    ra_min=ra_min[patch_idx],
+                    ra_max=ra_max[patch_idx],
+                    dec_min=dec_min[patch_idx],
+                    dec_max=dec_max[patch_idx],
+                )
+            else:
+                ra_lo, ra_hi, dec_lo, dec_hi = patch_bounds[patch_idx]
+                ra_loop, dec_loop = lc_utils.mc_lightcone_random_ra_dec(
+                    ran_key=ran_key,
+                    npts=ntot,
+                    ra_min=ra_lo,
+                    ra_max=ra_hi,
+                    dec_min=dec_lo,
+                    dec_max=dec_hi,
+                )
     
             list_ra.append(ra_loop)
             list_dec.append(dec_loop)
