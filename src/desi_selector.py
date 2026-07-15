@@ -1,5 +1,4 @@
 import os
-import hashlib
 import opencosmo as oc
 import numpy as np
 import pandas as pd
@@ -24,6 +23,7 @@ class DesiSelector:
     h = 0.6766
     N_S = 0.9665
     SIGMA8 = 0.8102
+    RANDOM_SEED = 42
     cosmo = LambdaCDM(H0=h * 100, Om0=OMEGA_C + OMEGA_B, Ode0=1 - (OMEGA_C + OMEGA_B))
     
     def __init__(self, 
@@ -40,6 +40,7 @@ class DesiSelector:
                  sigma_dex: float=None,
                  weight: float=None,
                  cache_root: str | Path | None = None,
+                 random_seed: int = RANDOM_SEED,
                  ):
 
         self.desi_tracer = desi_tracer
@@ -54,6 +55,7 @@ class DesiSelector:
         self.threshold_col = threshold_col
         self.sigma_dex = sigma_dex
         self.weight = weight
+        self.random_seed = int(random_seed)
         default_cache = os.environ.get(
             "DESI_SELECTOR_CACHE_ROOT",
             "/pscratch/sd/l/lhior/nz_clustering_e2e/desi_cache",
@@ -175,19 +177,12 @@ class DesiSelector:
         self.sim_cat = sim_cat
 
     def _noise_rng(self) -> np.random.Generator:
-        """Deterministic RNG for tracer noise (reproducible across runs)."""
-        key = (
-            self.desi_tracer,
-            self.calibration_version,
-            self.threshold_col,
-            None if self.sigma_dex is None else float(self.sigma_dex),
-            None if self.weight is None else float(self.weight),
-            float(self.z_range[0]),
-            float(self.z_range[1]),
-        )
-        digest = hashlib.md5(repr(key).encode()).hexdigest()
-        seed = int(digest[:8], 16)
-        return np.random.default_rng(seed)
+        """Fixed-seed RNG for tracer noise (reproducible across runs)."""
+        return np.random.default_rng(self.random_seed)
+
+    def _rng(self) -> np.random.Generator:
+        """Fixed-seed NumPy Generator used for random catalogs."""
+        return np.random.default_rng(self.random_seed)
 
     def _sim_cat_path(self) -> Path:
         z_low, z_high = self.z_range[0], self.z_range[1]
@@ -447,7 +442,7 @@ class DesiSelector:
         else:
             patch_bounds = self._patch_ra_dec_bounds()
             use_theta_phi = False
-        ran_key = jran.PRNGKey(0)
+        ran_key = jran.PRNGKey(self.random_seed)
     
         
         list_ra = []
@@ -485,7 +480,9 @@ class DesiSelector:
         list_rand_cols = np.column_stack([rand_ra, rand_dec])
         rand_cat = pd.DataFrame(list_rand_cols, columns=['ra', 'dec'])
         rand_cat = rand_cat.reset_index(drop=True) 
-        mock_cat_temp = mock_cat.reset_index(drop=True).sample(len(rand_cat), replace=True)
+        mock_cat_temp = mock_cat.reset_index(drop=True).sample(
+            len(rand_cat), replace=True, random_state=self.random_seed
+        )
         rand_cat['distance'] = mock_cat_temp['distance'].to_numpy()
         rand_cat['redshift_true'] = mock_cat_temp['redshift_true'].to_numpy()
     
@@ -790,16 +787,19 @@ class DesiSelectorE2E:
         ra_min = np.min(self.sim_cat['ra'])
         ra_max = np.max(self.sim_cat['ra'])
         
-        rand_ra = ra_min + (ra_max - ra_min)*np.random.random(size=ntot)
+        rng = self._rng()
+        rand_ra = ra_min + (ra_max - ra_min)*rng.random(size=ntot)
         cth_min = np.min(np.sin(np.radians(self.sim_cat['dec'])))
         cth_max = np.max(np.sin(np.radians(self.sim_cat['dec'])))
-        cth_rand = cth_min + (cth_max - cth_min)*np.random.random(size=ntot)
+        cth_rand = cth_min + (cth_max - cth_min)*rng.random(size=ntot)
         rand_dec = np.degrees(np.arcsin(cth_rand))        
             
         list_rand_cols = np.column_stack([rand_ra, rand_dec])
         rand_cat = pd.DataFrame(list_rand_cols, columns=['ra', 'dec'])
         rand_cat = rand_cat.reset_index(drop=True) 
-        mock_cat_temp = mock_cat.reset_index(drop=True).sample(len(rand_cat), replace=True)
+        mock_cat_temp = mock_cat.reset_index(drop=True).sample(
+            len(rand_cat), replace=True, random_state=self.random_seed
+        )
         rand_cat['distance'] = mock_cat_temp['distance'].to_numpy()
         rand_cat['redshift_true'] = mock_cat_temp['redshift_true'].to_numpy()
     

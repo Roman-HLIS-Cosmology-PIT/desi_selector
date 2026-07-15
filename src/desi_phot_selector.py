@@ -22,19 +22,22 @@ class DesiPhotSelector:
     h = 0.6766
     N_S = 0.9665
     SIGMA8 = 0.8102
+    RANDOM_SEED = 42
     cosmo = LambdaCDM(H0=h * 100, Om0=OMEGA_C + OMEGA_B, Ode0=1 - (OMEGA_C + OMEGA_B))
     
     def __init__(self, 
                  desi_tracer,
                  path_sim,
                  calibration_version,
-                 z_range
+                 z_range,
+                 random_seed: int = RANDOM_SEED,
                  ):
 
         self.desi_tracer = desi_tracer
         self.path_sim = path_sim
         self.calibration_version = calibration_version
         self.z_range = z_range
+        self.random_seed = int(random_seed)
 
     
 
@@ -112,7 +115,7 @@ class DesiPhotSelector:
     
         ra_min, dec_max = lightcone_utils.get_ra_dec_from_theta_phi(theta_low, phi_low)
         ra_max, dec_min = lightcone_utils.get_ra_dec_from_theta_phi(theta_high, phi_high)
-        ran_key = jran.PRNGKey(0)
+        ran_key = jran.PRNGKey(self.random_seed)
     
         
         list_ra = []
@@ -133,7 +136,9 @@ class DesiPhotSelector:
         list_rand_cols = np.column_stack([rand_ra, rand_dec])
         rand_cat = pd.DataFrame(list_rand_cols, columns=['ra', 'dec'])
         rand_cat = rand_cat.reset_index(drop=True) 
-        mock_cat_temp = mock_cat.reset_index(drop=True).sample(len(rand_cat), replace=True)
+        mock_cat_temp = mock_cat.reset_index(drop=True).sample(
+            len(rand_cat), replace=True, random_state=self.random_seed
+        )
         rand_cat['distance'] = mock_cat_temp['distance'].to_numpy()
         rand_cat['redshift_true'] = mock_cat_temp['redshift_true'].to_numpy()
     
