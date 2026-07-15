@@ -58,8 +58,9 @@ class DesiSelector:
         self.random_seed = int(random_seed)
         default_cache = os.environ.get(
             "DESI_SELECTOR_CACHE_ROOT",
-            "/pscratch/sd/l/lhior/nz_clustering_e2e/desi_cache",
+            os.path.join(os.environ.get("PSCRATCH"), "desi_cache"),
         )
+   
         self.cache_root = Path(cache_root if cache_root is not None else default_cache)
         self._list_sim_data = None
 
