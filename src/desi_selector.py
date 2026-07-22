@@ -405,27 +405,39 @@ class DesiSelector:
 
         return mock_cat
 
-    def _patch_ra_dec_bounds(self) -> dict[int, tuple[float, float, float, float]]:
-        bounds: dict[int, tuple[float, float, float, float]] = {}
-        for patch in np.unique(self.sim_cat["lc_patch"]):
-            patch_data = self.sim_cat[self.sim_cat["lc_patch"] == patch]
-            bounds[int(patch)] = (
-                float(patch_data["ra"].min()),
-                float(patch_data["ra"].max()),
-                float(patch_data["dec"].min()),
-                float(patch_data["dec"].max()),
+    def _random_ra_dec_healpix(self, npts: int, nside: int = 128) -> tuple[np.ndarray, np.ndarray]:
+        """Draw uniform RA/Dec samples inside the HEALPix footprint of sim_cat."""
+        rng = self._rng()
+        pixels = np.unique(
+            hp.ang2pix(
+                nside,
+                self.sim_cat["ra"].to_numpy(),
+                self.sim_cat["dec"].to_numpy(),
+                lonlat=True,
+                nest=False,
             )
-        return bounds
+        )
+        # Nested subpixel sampling (yaw-style) for uniform coverage within pixels.
+        pixels_nested = hp.ring2nest(nside, pixels)
+
+        max_order = 29
+        max_nside = 2**max_order
+        order = hp.nside2order(nside)
+        scale = 4 ** (max_order - order)
+
+        ipix_draw = rng.choice(pixels_nested, size=npts, replace=True)
+        ipix_rand = ipix_draw * scale + rng.integers(0, scale, size=npts)
+        ra, dec = hp.pix2ang(nside=max_nside, ipix=ipix_rand, nest=True, lonlat=True)
+        return ra, dec
 
     def produce_desi_rands(self, mock_cat=None):
         
-        sim_patches = np.unique(self.sim_cat['lc_patch'])
-
         RAND_TO_DATA_RATIO = 10
-        npatches = len(sim_patches)
-        ntot = int(len(mock_cat)* RAND_TO_DATA_RATIO / npatches)
         lc_path = self._lc_metadata_path()
         if lc_path.exists():
+            sim_patches = np.unique(self.sim_cat['lc_patch'])
+            npatches = len(sim_patches)
+            ntot = int(len(mock_cat)* RAND_TO_DATA_RATIO / npatches)
             lc_cores_decomp = lightcone_utils.read_lc_ra_dec_patch_decomposition(str(lc_path))[0]
             theta_low = lc_cores_decomp[:,1]
             theta_high = lc_cores_decomp[:,2]
@@ -433,19 +445,13 @@ class DesiSelector:
             phi_high = lc_cores_decomp[:,4]
             ra_min, dec_max = lightcone_utils.get_ra_dec_from_theta_phi(theta_low, phi_low)
             ra_max, dec_min = lightcone_utils.get_ra_dec_from_theta_phi(theta_high, phi_high)
-            use_theta_phi = True
-        else:
-            patch_bounds = self._patch_ra_dec_bounds()
-            use_theta_phi = False
-        ran_key = jran.PRNGKey(self.random_seed)
-    
-        
-        list_ra = []
-        list_dec = []
-        
-        for patch in sim_patches:
-            patch_idx = int(patch)
-            if use_theta_phi:
+            ran_key = jran.PRNGKey(self.random_seed)
+
+            list_ra = []
+            list_dec = []
+
+            for patch in sim_patches:
+                patch_idx = int(patch)
                 ra_loop, dec_loop = lc_utils.mc_lightcone_random_ra_dec(
                     ran_key=ran_key,
                     npts=ntot,
@@ -454,23 +460,14 @@ class DesiSelector:
                     dec_min=dec_min[patch_idx],
                     dec_max=dec_max[patch_idx],
                 )
-            else:
-                ra_lo, ra_hi, dec_lo, dec_hi = patch_bounds[patch_idx]
-                ra_loop, dec_loop = lc_utils.mc_lightcone_random_ra_dec(
-                    ran_key=ran_key,
-                    npts=ntot,
-                    ra_min=ra_lo,
-                    ra_max=ra_hi,
-                    dec_min=dec_lo,
-                    dec_max=dec_hi,
-                )
-    
-            list_ra.append(ra_loop)
-            list_dec.append(dec_loop)
-                                        
-            
-        rand_ra = np.concatenate(list_ra)
-        rand_dec = np.concatenate(list_dec)
+                list_ra.append(ra_loop)
+                list_dec.append(dec_loop)
+
+            rand_ra = np.concatenate(list_ra)
+            rand_dec = np.concatenate(list_dec)
+        else:
+            ntot = int(len(mock_cat) * RAND_TO_DATA_RATIO)
+            rand_ra, rand_dec = self._random_ra_dec_healpix(ntot)
             
         list_rand_cols = np.column_stack([rand_ra, rand_dec])
         rand_cat = pd.DataFrame(list_rand_cols, columns=['ra', 'dec'])
