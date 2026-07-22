@@ -62,7 +62,6 @@ class DesiSelector:
         )
    
         self.cache_root = Path(cache_root if cache_root is not None else default_cache)
-        self._list_sim_data = None
 
         
         if self.threshold_col is None:
@@ -84,7 +83,6 @@ class DesiSelector:
         
         path_sim_data = Path(f"{self.path_sim}/{self.calibration_version}")
         list_sim_data = list(f for f in path_sim_data.glob("*.hdf5") if f.stem.startswith("lc_cores"))
-        self._list_sim_data = list_sim_data
 
         # Calculate the total area the mocks span on the sky 
         dataset = oc.open(list_sim_data, synth_cores=self.synth_cores)
