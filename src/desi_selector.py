@@ -139,7 +139,7 @@ class DesiSelector:
             sim_cat.rename(columns={'logsm_obs': 'log_stellar_mass'}, inplace=True)
 
             if self.sigma_dex is not None:
-                rng = self._noise_rng()
+                rng = self._rng()
                 noise = rng.normal(loc=0, scale=self.sigma_dex, size=len(sim_cat))
                 sim_cat['log_peak_sub_halo_mass_noisy'] = sim_cat['log_peak_sub_halo_mass'] + noise
         
@@ -147,7 +147,7 @@ class DesiSelector:
             sim_cat.rename(columns={'logmp_obs': 'log_peak_sub_halo_mass'}, inplace=True)
 
             if self.sigma_dex is not None:
-                rng = self._noise_rng()
+                rng = self._rng()
                 noise = rng.normal(loc=0, scale=self.sigma_dex, size=len(sim_cat))
                 sim_cat['log_peak_sub_halo_mass_noisy'] = sim_cat['log_peak_sub_halo_mass'] + noise
 
@@ -158,7 +158,7 @@ class DesiSelector:
                 sim_cat['log_sfr_times_wmass'] = sim_cat['log_sfr'] + self.weight*sim_cat['logsm_obs']
 
             if self.sigma_dex is not None:
-                rng = self._noise_rng()
+                rng = self._rng()
                 noise = rng.normal(loc=0, scale=self.sigma_dex, size=len(sim_cat))
                 sim_cat['log_sfr_noisy'] = sim_cat['log_sfr'] + noise
             else:
@@ -168,19 +168,15 @@ class DesiSelector:
             
             if self.sigma_dex is not None:
 
-                rng = self._noise_rng()
+                rng = self._rng()
                 sigma_nat = self.sigma_dex * np.log(10)
                 noise = rng.lognormal(mean=0, sigma=sigma_nat, size=len(sim_cat))
                 sim_cat['black_hole_mass_noisy'] = sim_cat['black_hole_mass'] * noise    
 
         self.sim_cat = sim_cat
 
-    def _noise_rng(self) -> np.random.Generator:
-        """Fixed-seed RNG for tracer noise (reproducible across runs)."""
-        return np.random.default_rng(self.random_seed)
-
     def _rng(self) -> np.random.Generator:
-        """Fixed-seed NumPy Generator used for random catalogs."""
+        """Fixed-seed NumPy Generator for noise and random catalogs."""
         return np.random.default_rng(self.random_seed)
 
     def _sim_cat_path(self) -> Path:
