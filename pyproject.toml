@@ -1,0 +1,30 @@
+[project]
+name = "desi-selector"
+version = "0.1.0"
+description = "Select DESI-like samples from Rubin (Diffsky) simulations."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+authors = [
+    { name = "LSST Dark Energy Science Collaboration (DESC)" }
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "astropy",
+    "pyarrow",
+    "jax",
+    "healpy",
+    "treecorr",
+    "opencosmo",
+    "diffsky",
+]
+
+[build-system]
+requires = ["setuptools>=62", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["desi_selector", "desi_phot_selector"]
